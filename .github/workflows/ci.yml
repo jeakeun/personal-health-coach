@@ -17,6 +17,19 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
 
+    # ⭐ 러너의 콘솔 인코딩이 cp1252 라, 한글이 섞인 출력을 그대로 쓰면
+    #    UnicodeEncodeError 로 게이트가 죽습니다. 계약 이름(C1~C4)도 테스트
+    #    이름도 한글이므로 게이트 4·5·6 이 전부 해당됩니다.
+    #
+    #    ⚠ 실제로 첫 CI 실행에서 게이트 4 가 이렇게 죽었습니다 — **계약을
+    #      평가하다 실패한 것이 아니라 결과를 출력하다 죽어서**, 경계 A·B 가
+    #      검사된 적이 없는 상태였습니다 (F-28).
+    #      `.importlinter` 의 cp949 문제(F-06), `alembic.ini` 의 cp949
+    #      문제(F-20) 에 이은 같은 원인 세 번째입니다.
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+
     steps:
       - uses: actions/checkout@v4
 
