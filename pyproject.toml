@@ -1,0 +1,208 @@
+[project]
+name = "personal-health-coach"
+version = "0.1.0"
+description = "개인 맞춤 건강관리 추천 시스템 — 웰니스/정보 제공 도구 (의료기기 아님)"
+requires-python = ">=3.12,<3.13"
+readme = "README.md"
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "jinja2>=3.1",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "python-multipart>=0.0.12",
+    "sqlalchemy>=2.0",
+    "alembic>=1.14",
+    "argon2-cffi>=23.1",
+    "pyotp>=2.9",
+    "structlog>=24.4",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "hypothesis>=6.115",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "import-linter>=2.1",
+    "pip-audit>=2.7",
+    "cyclonedx-bom>=4.6",
+]
+
+[project.scripts]
+phc = "phc.main:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/phc"]
+
+# ---------------------------------------------------------------------------
+# ruff — 린트 및 포맷 (S02)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "B",         # bugbear
+    "S",         # bandit (보안)
+    "UP",        # pyupgrade
+    "ANN",       # 타입 어노테이션 강제
+    "RUF",
+]
+ignore = [
+    "ANN401",  # Any 허용 (포트 경계에서 제한적으로 사용)
+    "S101",    # assert — 테스트에서 사용
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "ANN"]  # 테스트 고정 자격증명 문자열 허용
+
+# ---------------------------------------------------------------------------
+# mypy — 타입 검사 (S02)
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+disallow_any_generics = true
+mypy_path = "src"
+packages = ["phc"]
+
+[[tool.mypy.overrides]]
+module = ["win32crypt.*", "pyotp.*", "cyclonedx.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# import-linter — 모듈 경계 린트 (S03)  ⭐ 경계 A·B 집행
+#
+# 이 계약은 코드보다 먼저 작성되었습니다. 코드가 생긴 뒤 린트를 붙이면 이미
+# 위반이 쌓여 있어 "기존 위반 예외 처리"로 시작하게 되고, 경계 집행이 형식적인
+# 것이 됩니다.
+#
+# 설정을 별도 .importlinter 파일이 아니라 여기에 두는 이유:
+#   configparser 는 파일을 로케일 인코딩(한국어 Windows 에서 cp949)으로 읽어
+#   한글 주석이 깨집니다. TOML 은 명세상 항상 UTF-8 입니다.
+#
+# 검증 방법: 의도적으로 위반하는 import 를 넣어 CI 가 실제로 실패하는지
+#            확인합니다 (tests/integration/test_boundary_lint.py, S39).
+#            린트가 걸려 있으나 실제로 잡지 못하는 상태를 방지합니다.
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "phc"
+# C4 가 sqlalchemy·fastapi 같은 외부 패키지를 금지 대상으로 지정하므로 필요합니다.
+include_external_packages = true
+
+# C1 — 계층 순서. 위가 상위 계층이며, 아래에서 위로의 import 를 금지합니다.
+[[tool.importlinter.contracts]]
+name = "C1 계층 순서 (역방향 import 금지)"
+type = "layers"
+exhaustive = false
+layers = [
+    "phc.web",
+    "phc.advisory",
+    "phc.healthdata",
+    "phc.generation",
+    "phc.safety",
+    "phc.identity",
+    "phc.knowledge",
+    "phc.operations",
+    "phc.shared",
+]
+
+# C2 — 경계 B (계정 도메인 ↔ 건강 데이터 도메인)   ⭐ FR-39, US-48, RSK-10
+# 이 계약이 깨지면 "관리자는 타인의 건강 데이터를 볼 수 없다"가 코드 수준에서
+# 보장되지 않습니다.
+[[tool.importlinter.contracts]]
+name = "C2 경계 B — identity 는 healthdata/advisory 를 모른다"
+type = "forbidden"
+source_modules = ["phc.identity"]
+forbidden_modules = ["phc.healthdata", "phc.advisory"]
+allow_indirect_imports = false
+
+# C3 — 경계 A (규칙 계층 ↔ LLM 계층)               ⭐ FR-12, FR-14, FR-28
+# RawLlmAdapter 와 LlmPort 는 generation 모듈 내부 전용입니다. 도메인에
+# 노출되는 생성 통로는 GuardedGenerationPort 하나뿐이며, 이 계약이 그것을
+# 기계적으로 강제합니다.
+#
+# 대상 모듈은 Unit 1C 에서 구현됩니다. 계약을 지금 정의해 두는 이유는 모듈이
+# 만들어지는 시점에 규칙이 이미 존재해야 위반 코드가 커밋되지 않기 때문입니다.
+[[tool.importlinter.contracts]]
+name = "C3 경계 A — RawLlmAdapter/LlmPort 는 generation 밖으로 나가지 않는다"
+type = "forbidden"
+source_modules = [
+    "phc.web",
+    "phc.advisory",
+    "phc.healthdata",
+    "phc.safety",
+    "phc.identity",
+    "phc.knowledge",
+    "phc.operations",
+    "phc.shared",
+]
+forbidden_modules = [
+    "phc.generation.adapters.raw_llm",
+    "phc.generation.ports.llm",
+]
+allow_indirect_imports = false
+
+# C4 — 도메인 순수성                                NFR-1A-38
+# 도메인 모델이 저장소·웹 프레임워크에 종속되면 인메모리 리포지토리로 대체
+# 테스트할 수 없게 되고, PBT 속성 3(소유자 전용 반환)을 리포지토리마다 검증하기
+# 어려워집니다.
+[[tool.importlinter.contracts]]
+name = "C4 도메인 순수성 — domain 계층은 sqlalchemy/fastapi 를 모른다"
+type = "forbidden"
+source_modules = [
+    "phc.shared.types",
+    "phc.shared.scope",
+    "phc.identity.domain",
+    "phc.operations.domain",
+    "phc.knowledge.domain",
+    "phc.safety.domain",
+    "phc.generation.domain",
+    "phc.healthdata.domain",
+    "phc.advisory.domain",
+]
+forbidden_modules = ["sqlalchemy", "alembic", "fastapi", "starlette", "jinja2"]
+allow_indirect_imports = false
+
+# ---------------------------------------------------------------------------
+# pytest / coverage / Hypothesis (S02)
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+markers = [
+    "chaos: 복원력 카오스 실험 (RESILIENCY-14)",
+    "failclosed: fail closed 회귀 테스트",
+    "property: Hypothesis 속성 테스트 (PBT-01)",
+    "slow: 실제 Argon2id 파라미터 등 의도적으로 느린 검증",
+]
+
+[tool.coverage.run]
+source = ["src/phc"]
+branch = true
+
+[tool.coverage.report]
+# NFR-1A-34 — 전체 80% 이상. identity 모듈 90% 기준은 CI에서 별도 검사
+fail_under = 80
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]

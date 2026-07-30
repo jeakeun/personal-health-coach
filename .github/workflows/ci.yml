@@ -1,0 +1,91 @@
+name: CI
+
+# 러너를 windows-latest 로 고정한 이유:
+#   SecretStorePort 의 DPAPI 어댑터는 Windows 전용입니다. Linux 러너에서는
+#   대체 구현으로 우회하게 되어 "테스트는 통과하는데 실제 환경에서는 동작하지
+#   않는" 상태가 만들어집니다. 카오스 실험 C3(키 저장소 차단)도 실환경에서만
+#   의미가 있습니다.  (Infrastructure Design I4=A)
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      # --- 게이트 1: 의존성 lock 검증 (NFR-07) -------------------------------
+      # --locked 는 uv.lock 과 pyproject.toml 이 어긋나면 실패합니다.
+      # lock 파일 없이 설치되는 경로를 만들지 않습니다.
+      - name: "게이트 1 · 의존성 (lock 검증)"
+        run: uv sync --locked --all-extras
+
+      # --- 게이트 2: 포맷·린트 ------------------------------------------------
+      - name: "게이트 2 · ruff"
+        run: |
+          uv run ruff format --check .
+          uv run ruff check .
+
+      # --- 게이트 3: 타입 검사 ------------------------------------------------
+      - name: "게이트 3 · mypy"
+        run: uv run mypy
+
+      # --- 게이트 4: 모듈 경계 린트 (NFR-1A-33) ⭐ ----------------------------
+      # 경계 A(C3) 와 경계 B(C2) 를 기계적으로 집행하는 지점입니다.
+      # 이 게이트가 통과했다고 끝이 아니라, 의도적 위반을 실제로 잡아내는지
+      # tests/integration/test_boundary_lint.py 가 별도로 검증합니다.
+      # 계약은 pyproject.toml 의 [tool.importlinter] 에 있습니다.
+      # 별도 .importlinter 파일을 쓰지 않는 이유: configparser 가 파일을
+      # 로케일 인코딩(한국어 Windows 에서 cp949)으로 읽어 한글 주석이 깨집니다.
+      - name: "게이트 4 · import-linter (경계 A·B)"
+        run: uv run lint-imports
+
+      # --- 게이트 5: 단위 테스트 ----------------------------------------------
+      - name: "게이트 5 · 단위 테스트"
+        run: uv run pytest tests/unit
+
+      # --- 게이트 6: 속성 테스트 (NFR-1A-35) ----------------------------------
+      # 실패 시 Hypothesis 가 재현 시드를 출력하도록 -p no:randomly 와
+      # 상세 출력을 켭니다. 시드 없이 실패하면 재현이 불가능합니다 (NFR-27).
+      - name: "게이트 6 · 속성 테스트 (Hypothesis)"
+        run: uv run pytest tests/property -v --hypothesis-show-statistics
+
+      # --- 게이트 7: 커버리지 (NFR-1A-34) -------------------------------------
+      # 전체 80% 는 pyproject.toml 의 fail_under 가, identity 90% 는 아래가 검사.
+      - name: "게이트 7 · 커버리지 (전체 80% / identity 90%)"
+        run: |
+          uv run pytest --cov --cov-report=xml --cov-report=term
+          uv run python scripts/check_module_coverage.py --module phc.identity --min 90
+
+      # --- 게이트 8: 취약점 스캔 (SECURITY-10) --------------------------------
+      - name: "게이트 8 · pip-audit"
+        run: uv run pip-audit --strict
+
+      # --- 게이트 9: SBOM 생성 (NFR-07, SECURITY-10) --------------------------
+      - name: "게이트 9 · SBOM (CycloneDX)"
+        run: uv run cyclonedx-py environment -o sbom.json
+
+      - name: SBOM 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+
+      # 태그 push 시 릴리스에 SBOM 첨부
+      - name: 릴리스에 SBOM 첨부
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sbom.json
