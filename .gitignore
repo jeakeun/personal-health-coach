@@ -50,6 +50,7 @@ dist/
 htmlcov/
 coverage.xml
 sbom.json
+requirements-audit.txt
 
 # ---------------------------------------------------------------------------
 # 편집기 / OS

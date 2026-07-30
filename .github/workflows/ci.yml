@@ -46,10 +46,15 @@ jobs:
         run: uv sync --locked --all-extras
 
       # --- 게이트 2: 포맷·린트 ------------------------------------------------
-      - name: "게이트 2 · ruff"
-        run: |
-          uv run ruff format --check .
-          uv run ruff check .
+      # ⚠ 한 단계에 명령을 여러 줄로 넣지 않습니다 (F-29).
+      #    pwsh 는 마지막 명령의 종료 코드만 단계 결과로 삼으므로, 앞 명령이
+      #    실패해도 뒤가 성공하면 단계 전체가 통과합니다 — 게이트가 조용히
+      #    무력해집니다. 명령마다 단계를 나누는 것이 그 자체로 방어입니다.
+      - name: "게이트 2 · ruff format"
+        run: uv run ruff format --check .
+
+      - name: "게이트 2 · ruff check"
+        run: uv run ruff check .
 
       # --- 게이트 3: 타입 검사 ------------------------------------------------
       - name: "게이트 3 · mypy"
@@ -77,14 +82,31 @@ jobs:
 
       # --- 게이트 7: 커버리지 (NFR-1A-34) -------------------------------------
       # 전체 80% 는 pyproject.toml 의 fail_under 가, identity 90% 는 아래가 검사.
-      - name: "게이트 7 · 커버리지 (전체 80% / identity 90%)"
-        run: |
-          uv run pytest --cov --cov-report=xml --cov-report=term
-          uv run python scripts/check_module_coverage.py --module phc.identity --min 90
+      #
+      # ⚠ 두 단계로 나눈 이유는 F-29 — 한 블록에 두면 `pytest --cov` 가
+      #   80% 미달로 실패해도 뒤의 identity 검사가 통과하는 순간 게이트가
+      #   통과합니다. 실제로 첫 CI 실행에서 커버리지 73.1% 가 통과로
+      #   보고되었습니다.
+      - name: "게이트 7 · 커버리지 (전체 80%)"
+        run: uv run pytest --cov --cov-report=xml --cov-report=term
+
+      - name: "게이트 7 · 커버리지 (identity 90%)"
+        run: uv run python scripts/check_module_coverage.py --module phc.identity --min 90
 
       # --- 게이트 8: 취약점 스캔 (SECURITY-10) --------------------------------
+      # 환경이 아니라 **잠금된 의존성 목록**을 감사합니다.
+      #
+      # 환경을 감사하면 editable 로 설치된 이 프로젝트 자신이 포함되는데,
+      # PyPI 에 없는 패키지라 `--strict` 가 "감사 불가" 로 판정해 실패합니다
+      # (`--skip-editable` 도 마찬가지 — strict 는 건너뛴 것도 실패로 봅니다).
+      #
+      # lock 파일을 감사하면 그 문제가 사라질 뿐 아니라, **실제로 배포될 정확한
+      # 버전 집합**을 검사하게 되어 강도가 올라갑니다 (SECURITY-10).
+      - name: "게이트 8 · 의존성 목록 추출"
+        run: uv export --format requirements-txt --all-extras --no-emit-project --no-hashes -o requirements-audit.txt
+
       - name: "게이트 8 · pip-audit"
-        run: uv run pip-audit --strict
+        run: uv run pip-audit --strict -r requirements-audit.txt
 
       # --- 게이트 9: SBOM 생성 (NFR-07, SECURITY-10) --------------------------
       - name: "게이트 9 · SBOM (CycloneDX)"
